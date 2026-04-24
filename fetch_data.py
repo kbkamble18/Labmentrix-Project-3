@@ -49,21 +49,15 @@ def fetch_live_matches():
 
 def fetch_live_scorecard(match_id):
     url = f"{BASE_URL}/mcenter/v1/{match_id}/hscard"
-    return fetch_with_retry(url, f"Live Scorecard {match_id}")
+    return fetch_with_retry(url, f"Scorecard {match_id}")
 
 
-def fetch_live_commentary(match_id):
-    url = f"{BASE_URL}/mcenter/v1/{match_id}/hcomm"
-    return fetch_with_retry(url, f"Commentary {match_id}")
-
-
-# ======================== MAIN ========================
 if __name__ == "__main__":
     print(f"\n🚀 LIVE Fetch started at {datetime.now().strftime('%H:%M:%S')}\n")
 
     live_data = fetch_live_matches()
     if not live_data:
-        print("❌ No live data. Exiting.")
+        print("❌ No live data.")
         exit()
 
     matches_df, teams_df, venues_df, series_df = extract_all_tables(live_data)
@@ -83,89 +77,72 @@ if __name__ == "__main__":
     metadata = MetaData()
     metadata.reflect(bind=engine)
 
-    MAX_LIVE = 3
+    # ======================== SAVE REFERENCE DATA FIRST ========================
+    print("\n   📤 Saving reference data...")
+    try:
+        if not venues_df.empty:
+            upsert_dataframe(venues_df, metadata.tables["venues"], engine)
+        if not teams_df.empty:
+            upsert_dataframe(teams_df, metadata.tables["teams"], engine)
+        if not series_df.empty:
+            upsert_dataframe(series_df, metadata.tables["series"], engine)
+        if not matches_df.empty:
+            upsert_dataframe(matches_df, metadata.tables["matches"], engine)
+    except Exception as e:
+        print(f"   ⚠️ Reference data warning (continuing): {e}")
+
+    # ======================== PROCESS SCORECARDS ========================
+    MAX_LIVE = 5
     live_matches = matches_df.head(MAX_LIVE)
 
     players_df = pd.DataFrame()
     batting_df = pd.DataFrame()
     bowling_df = pd.DataFrame()
 
-    debug_done = False
-
     for _, row in live_matches.iterrows():
-        match_id = row["match_id"]
-        print(f"\n➡️ Processing LIVE Match: {match_id}")
+        mid = row["match_id"]
+        print(f"\n➡️ Processing LIVE Match: {mid}")
 
-        scorecard = fetch_live_scorecard(match_id)
-
+        scorecard = fetch_live_scorecard(mid)
         if scorecard:
-            # === DEEP DEBUG (only first match) ===
-            if not debug_done:
-                print("\n========== DEEP DEBUG ==========")
-                print(f"Top level keys: {list(scorecard.keys())}")
-
-                if "scorecard" in scorecard and len(scorecard["scorecard"]) > 0:
-                    first_innings = scorecard["scorecard"][0]
-                    print(f"\nFirst innings keys: {list(first_innings.keys())}")
-
-                    # Check for batting
-                    if "batTeamDetails" in first_innings:
-                        print("Found: batTeamDetails")
-                        print(
-                            f"  batTeamDetails keys: {list(first_innings['batTeamDetails'].keys())}"
-                        )
-                    elif "battingTeam" in first_innings:
-                        print("Found: battingTeam")
-                    else:
-                        print("No standard batting section found")
-
-                    # Check for bowling
-                    if "bowlTeamDetails" in first_innings:
-                        print("Found: bowlTeamDetails")
-                    elif "bowlingTeam" in first_innings:
-                        print("Found: bowlingTeam")
-                    else:
-                        print("No standard bowling section found")
-                print("========== END DEBUG ==========\n")
-                debug_done = True
-
-            p, b, bw = extract_live_scorecard(scorecard, match_id)
+            p, b, bw = extract_live_scorecard(scorecard, mid)
             players_df = pd.concat([players_df, p], ignore_index=True)
             batting_df = pd.concat([batting_df, b], ignore_index=True)
             bowling_df = pd.concat([bowling_df, bw], ignore_index=True)
-
             print(f"   ✅ Scorecard: {len(b)} batting, {len(bw)} bowling rows")
         else:
             print("   ⚠️ No scorecard data")
 
+    players_df.drop_duplicates(subset=["player_id"], inplace=True)
     print(
         f"\n📊 Final → Players: {len(players_df)} | Batting: {len(batting_df)} | Bowling: {len(bowling_df)}"
     )
 
-    # Upsert (safe)
+    # ======================== SAVE STATS ========================
     try:
         if not players_df.empty:
-            upsert_dataframe(
-                players_df, metadata.tables["players"], engine, "player_id"
-            )
+            upsert_dataframe(players_df, metadata.tables["players"], engine)
+
         if not batting_df.empty:
-            upsert_dataframe(
-                batting_df,
-                metadata.tables["batting_stats"],
-                engine,
-                ["match_id", "player_id"],
-            )
+            batting_df = batting_df[
+                [
+                    "match_id",
+                    "player_id",
+                    "runs",
+                    "balls",
+                    "fours",
+                    "sixes",
+                    "strike_rate",
+                ]
+            ]
+            upsert_dataframe(batting_df, metadata.tables["batting_stats"], engine)
+
         if not bowling_df.empty:
-            upsert_dataframe(
-                bowling_df,
-                metadata.tables["bowling_stats"],
-                engine,
-                ["match_id", "player_id"],
-            )
+            bowling_df = bowling_df[
+                ["match_id", "player_id", "overs", "runs_given", "wickets", "economy"]
+            ]
+            upsert_dataframe(bowling_df, metadata.tables["bowling_stats"], engine)
 
-        if not matches_df.empty:
-            upsert_dataframe(matches_df, metadata.tables["matches"], engine, "match_id")
-
-        print("\n🎉 SUCCESS!")
+        print("\n🎉 LIVE DASHBOARD DATA UPDATED SUCCESSFULLY! 💋")
     except Exception as e:
-        print(f"❌ DB Error: {e}")
+        print(f"❌ Final DB Error: {e}")
