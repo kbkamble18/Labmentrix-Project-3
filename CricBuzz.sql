@@ -64,6 +64,16 @@ CREATE TABLE IF NOT EXISTS bowling_stats (
     economy FLOAT
 );
 
+-- Add missing columns to players table
+ALTER TABLE players ADD COLUMN IF NOT EXISTS country TEXT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS playing_role TEXT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS batting_style TEXT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS bowling_style TEXT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS team_id BIGINT REFERENCES teams(team_id);
+
+-- Add index for faster queries
+CREATE INDEX IF NOT EXISTS idx_players_country ON players(country);
+
 -- Optional: Add indexes for faster queries (highly recommended)
 CREATE INDEX IF NOT EXISTS idx_batting_match ON batting_stats(match_id);
 CREATE INDEX IF NOT EXISTS idx_batting_player ON batting_stats(player_id);
